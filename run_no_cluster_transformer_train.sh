@@ -65,12 +65,14 @@ mkdir -p ${MODEL_DIR}
 
 
 # train
-#: "
 CUDA_VISIBLE_DEVICES=${GPID} python -m torch.distributed.launch \
     --nproc_per_node ${N_GPUS} xbert/transformer.py \
     -m ${MODEL_TYPE} -n ${MODEL_NAME} --do_train \
     -x_trn ${PROC_DATA_DIR}/X.trn.${MODEL_TYPE}.${MAX_XSEQ_LEN}.pkl \
     -c_trn ${PROC_DATA_DIR}/C.trn.npz \
+    -x_tst ${PROC_DATA_DIR}/X.tst.${MODEL_TYPE}.${MAX_XSEQ_LEN}.pkl \
+    -c_tst ${PROC_DATA_DIR}/C.tst.npz \
+    -r ${MODEL_DIR} \
     -o ${MODEL_DIR} --overwrite_output_dir \
     --per_device_train_batch_size ${PER_DEVICE_TRN_BSZ} \
     --gradient_accumulation_steps ${GRAD_ACCU_STEPS} \
@@ -79,13 +81,13 @@ CUDA_VISIBLE_DEVICES=${GPID} python -m torch.distributed.launch \
     --learning_rate ${LEARNING_RATE} \
     --logging_steps ${LOGGING_STEPS} \
     |& tee ${MODEL_DIR}/log.txt
-#"
 
 
 # predict
 CUDA_VISIBLE_DEVICES=${GPID} python -u xbert/transformer.py \
     -m ${MODEL_TYPE} -n ${MODEL_NAME} \
     --do_eval -o ${MODEL_DIR} \
+    -r ${MODEL_DIR} \
     -x_trn ${PROC_DATA_DIR}/X.trn.${MODEL_TYPE}.${MAX_XSEQ_LEN}.pkl \
     -c_trn ${PROC_DATA_DIR}/C.trn.npz \
     -x_tst ${PROC_DATA_DIR}/X.tst.${MODEL_TYPE}.${MAX_XSEQ_LEN}.pkl \

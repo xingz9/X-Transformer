@@ -102,28 +102,29 @@ def transform_prediction(csr_codes, transform="lpsvm-l2"):
         raise NotImplementedError("unknown transform {}".format(transform))
     return csr_codes
 
+
 class HingeLoss(nn.Module):
-	"""criterion for loss function
-	y: 0/1 ground truth matrix of size: batch_size x output_size
-	f: real number pred matrix of size: batch_size x output_size
-	"""
+    """criterion for loss function
+    y: 0/1 ground truth matrix of size: batch_size x output_size
+    f: real number pred matrix of size: batch_size x output_size
+    """
 
-	def __init__(self, margin=1.0, squared=True):
-		super(HingeLoss, self).__init__()
-		self.margin = margin
-		self.squared = squared
+    def __init__(self, margin=1.0, squared=True):
+        super(HingeLoss, self).__init__()
+        self.margin = margin
+        self.squared = squared
 
-	def forward(self, f, y, C_pos=1.0, C_neg=1.0):
-		# convert y into {-1,1}
-		y_new = 2.0 * y - 1.0
-		tmp = y_new * f
+    def forward(self, f, y, C_pos=1.0, C_neg=1.0):
+        # convert y into {-1,1}
+        y_new = 2.0 * y - 1.0
+        tmp = y_new * f
 
-		# Hinge loss
-		loss = F.relu(self.margin - tmp)
-		if self.squared:
-			loss = loss ** 2
-		loss = loss * (C_pos * y + C_neg * (1.0 - y))
-		return loss.mean()
+        # Hinge loss
+        loss = F.relu(self.margin - tmp)
+        if self.squared:
+            loss = loss ** 2
+        loss = loss * (C_pos * y + C_neg * (1.0 - y))
+        return loss.mean()
 
 
 class TransformerMatcher(object):
@@ -157,26 +158,26 @@ class TransformerMatcher(object):
         )
         parser.add_argument(
             "-x_trn",
-			"--trn_feat_path",
-			default="./save_models/Eurlex-4K/proc_data/X.trn.bert.128.pkl",
+            "--trn_feat_path",
+            default="./save_models/Eurlex-4K/proc_data/X.trn.bert.128.pkl",
             type=str,
         )
         parser.add_argument(
             "-x_tst",
-			"--tst_feat_path",
-			default="./save_models/Eurlex-4K/proc_data/X.tst.bert.128.pkl",
+            "--tst_feat_path",
+            default=None,
             type=str,
         )
         parser.add_argument(
             "-c_trn",
-			"--trn_label_path",
-			default="./save_models/Eurlex-4K/proc_data/X.trn.pifa-tfidf-s0.npz",
+            "--trn_label_path",
+            default="./save_models/Eurlex-4K/proc_data/X.trn.pifa-tfidf-s0.npz",
             type=str,
         )
         parser.add_argument(
             "-c_tst",
-			"--tst_label_path",
-			default="./save_models/Eurlex-4K/proc_data/Y.tst.pifa-tfidf-s0.npz",
+            "--tst_label_path",
+            default="./save_models/Eurlex-4K/proc_data/Y.tst.pifa-tfidf-s0.npz",
             type=str,
         )
         parser.add_argument(
@@ -185,6 +186,13 @@ class TransformerMatcher(object):
             default="./tmp",
             type=str,
             help="The output directory where the model predictions and checkpoints will be written.",
+        )
+        parser.add_argument(
+            "-r",
+            "--restore_dir",
+            default=None,
+            type=str,
+            help="The directory where the model checkpoints will be restored from.",
         )
         ## Other parameters
         parser.add_argument(
@@ -261,6 +269,9 @@ class TransformerMatcher(object):
         )
         parser.add_argument(
             "--local_rank", type=int, default=-1, help="For distributed training: local_rank",
+        )
+        parser.add_argument(
+            "--eval_per_n_epochs", type=int, default=10, help="Run evaluation per n epochs.",
         )
 
         args = parser.parse_args()
@@ -440,7 +451,7 @@ class TransformerMatcher(object):
             eval_embeddings = None
         return eval_loss, eval_metrics, C_eval_pred, eval_embeddings
 
-    def train(self, args, X_trn, C_trn):
+    def train(self, args, X_trn, C_trn, X_tst=None, C_tst=None):
         """ Train the model """
         args.train_batch_size = args.per_device_train_batch_size * max(1, args.n_gpu)
         all_inst_idx = torch.tensor([f["inst_idx"] for f in X_trn], dtype=torch.long)
@@ -498,6 +509,17 @@ class TransformerMatcher(object):
             )
             logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
             logger.info("  Total optimization steps = %d", t_total)
+
+            if X_tst is not None:
+                assert C_tst is not None
+                tst_loss, tst_metrics, C_tst_pred, tst_embeddings = self.predict(args, X_tst, C_tst,
+                                                                                 topk=args.only_topk,
+                                                                                 get_hidden=True)
+                logger.info(
+                    "| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
+                logger.info(
+                    "| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
+                self.model.train()
 
         global_step = 0
         tr_loss, logging_loss = 0.0, 0.0
@@ -578,6 +600,19 @@ class TransformerMatcher(object):
 
                 if args.max_steps > 0 and global_step > args.max_steps:
                     break
+
+            if args.local_rank in [-1, 0] and epoch % args.eval_per_n_epochs == 0:
+                if X_tst is not None:
+                    assert C_tst is not None
+                    tst_loss, tst_metrics, C_tst_pred, tst_embeddings = self.predict(args, X_tst, C_tst,
+                                                                                     topk=args.only_topk,
+                                                                                     get_hidden=True)
+                    logger.info(
+                        "| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
+                    logger.info(
+                        "| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
+                    self.model.train()
+
             if args.max_steps > 0 and global_step > args.max_steps:
                 break
 
@@ -601,13 +636,31 @@ def main():
             X_trn = pickle.load(fin)
         C_trn = smat.load_npz(args.trn_label_path)
 
+        if args.tst_feat_path is not None:
+            with open(args.tst_feat_path, "rb") as fin:
+                X_tst = pickle.load(fin)
+            assert args.tst_label_path is not None
+            C_tst = smat.load_npz(args.tst_label_path)
+        else:
+            X_tst = None
+            C_tst = None
+
         # prepare transformer pretrained models
         TransformerMatcher.set_device(args)
         matcher = TransformerMatcher(num_clusters=C_trn.shape[1])
-        matcher.prepare_model(args)
+        if args.restore_dir is not None:
+            args.model_type = args.model_type.lower()
+            config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
+            matcher.config = config_class.from_pretrained(args.restore_dir)
+            matcher.config.output_hidden_states = True
+            model = model_class.from_pretrained(args.restore_dir, config=matcher.config)
+            model.to(args.device)
+            matcher.model = model
+        else:
+            matcher.prepare_model(args)
 
         # train
-        matcher.train(args, X_trn, C_trn)
+        matcher.train(args, X_trn, C_trn, X_tst, C_tst)
         if args.local_rank in [-1, 0]:
             matcher.save_model(args)
 
@@ -624,14 +677,14 @@ def main():
         C_trn = smat.load_npz(args.trn_label_path)
         C_tst = smat.load_npz(args.tst_label_path)
 
-        # load fine-tuned model in the args.output_dir
+        # load fine-tuned model in the args.restore_dir
         TransformerMatcher.set_device(args)
         matcher = TransformerMatcher(num_clusters=C_trn.shape[1])
         args.model_type = args.model_type.lower()
         config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
-        matcher.config = config_class.from_pretrained(args.output_dir)
+        matcher.config = config_class.from_pretrained(args.restore_dir)
         matcher.config.output_hidden_states = True
-        model = model_class.from_pretrained(args.output_dir, config=matcher.config)
+        model = model_class.from_pretrained(args.restore_dir, config=matcher.config)
         model.to(args.device)
         matcher.model = model
 
