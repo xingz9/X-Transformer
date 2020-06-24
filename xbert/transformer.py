@@ -273,6 +273,13 @@ class TransformerMatcher(object):
         parser.add_argument(
             "--eval_per_n_epochs", type=int, default=10, help="Run evaluation per n epochs.",
         )
+        parser.add_argument(
+            "-e",
+            "--edge_tensor_path",
+            default=None,
+            type=str,
+            help="If not None, the tensor will be loaded to build edges for the neighbor labels for each label",
+        )
 
         args = parser.parse_args()
         return {"parser": parser, "logger": logger, "args": args}
@@ -510,16 +517,28 @@ class TransformerMatcher(object):
             logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
             logger.info("  Total optimization steps = %d", t_total)
 
-            if X_tst is not None:
-                assert C_tst is not None
-                tst_loss, tst_metrics, C_tst_pred, tst_embeddings = self.predict(args, X_tst, C_tst,
-                                                                                 topk=args.only_topk,
-                                                                                 get_hidden=True)
+        if args.edge_tensor_path is not None:
+            if args.local_rank in [-1, 0]:
+                logger.info("Load neighbor tensor from {}".format(args.edge_tensor_path))
+            edge_tensor = torch.load(args.edge_tensor_path)
+            src, dst = tuple(zip(*edge_tensor.detach().numpy()))
+            assert len(src) == len(dst), "{} != {}".format(len(src), len(dst))
+            neighbor_mat = np.zeros((self.num_clusters, self.num_clusters))
+            for i in range(len(src)):
+                neighbor_mat[dst[i]][src[i]] = 1.0
+            neighbor_tensor = torch.tensor(neighbor_mat, device=args.device, dtype=torch.float32)
+
+        if X_tst is not None:
+            assert C_tst is not None
+            tst_loss, tst_metrics, C_tst_pred, tst_embeddings = self.predict(args, X_tst, C_tst,
+                                                                             topk=args.only_topk,
+                                                                             get_hidden=True)
+            if args.local_rank in [-1, 0]:
                 logger.info(
                     "| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
                 logger.info(
                     "| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
-                self.model.train()
+            self.model.train()
 
         global_step = 0
         tr_loss, logging_loss = 0.0, 0.0
@@ -552,6 +571,11 @@ class TransformerMatcher(object):
                 # compute loss, average across multi-gpu
                 labels = np.array(C_trn[inst_idx].toarray())
                 labels = torch.tensor(labels, dtype=torch.float).to(args.device)
+                if args.edge_tensor_path is not None:
+                    if epoch == 0 and step == 0:
+                        print(labels)
+                    labels = torch.matmul(labels, neighbor_tensor).clamp(0, 1)
+
                 loss = self.loss_fn(logits, labels)
 
                 if args.n_gpu > 1:
@@ -601,16 +625,19 @@ class TransformerMatcher(object):
                 if args.max_steps > 0 and global_step > args.max_steps:
                     break
 
-            if args.local_rank in [-1, 0] and epoch % args.eval_per_n_epochs == 0:
+            if epoch % args.eval_per_n_epochs == 0:
                 if X_tst is not None:
                     assert C_tst is not None
                     tst_loss, tst_metrics, C_tst_pred, tst_embeddings = self.predict(args, X_tst, C_tst,
                                                                                      topk=args.only_topk,
                                                                                      get_hidden=True)
-                    logger.info(
-                        "| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
-                    logger.info(
-                        "| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
+                    if args.local_rank in [-1, 0]:
+                        logger.info(
+                            "| matcher_tst_prec {}".format(
+                                " ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
+                        logger.info(
+                            "| matcher_tst_recl {}".format(
+                                " ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
                     self.model.train()
 
             if args.max_steps > 0 and global_step > args.max_steps:
