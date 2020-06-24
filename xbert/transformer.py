@@ -274,11 +274,16 @@ class TransformerMatcher(object):
             "--eval_per_n_epochs", type=int, default=10, help="Run evaluation per n epochs.",
         )
         parser.add_argument(
-            "-e",
             "--edge_tensor_path",
             default=None,
             type=str,
             help="If not None, the tensor will be loaded to build edges for the neighbor labels for each label",
+        )
+        parser.add_argument(
+            "--rank_npz_path",
+            default=None,
+            type=str,
+            help="If not None, the npz file with ranking scores for validation data.",
         )
 
         args = parser.parse_args()
@@ -458,6 +463,50 @@ class TransformerMatcher(object):
             eval_embeddings = None
         return eval_loss, eval_metrics, C_eval_pred, eval_embeddings
 
+    def evaluate(self, args, eval_features, C_eval_true, val_ranking=None):
+        _, eval_metrics, C_eval_pred, _ = self.predict(
+            args, eval_features, C_eval_true, topk=(10 if val_ranking is None else 128))
+
+        if val_ranking is not None:
+            n_insts, n_labels = C_eval_pred.get_shape()
+            inst_label_score = [[] for _ in range(n_insts)]
+
+            inst_list, label_list = C_eval_pred.nonzero()
+            for i in range(len(inst_list)):
+                inst_id = inst_list[i]
+                label_id = label_list[i]
+                label_scores = val_ranking.getrow(inst_id).toarray()[0]
+                inst_label_score[inst_id].append((label_id, label_scores[label_id]))
+
+            ranked_row = []
+            ranked_col = []
+            ranked_data = []
+            for inst_id in range(len(inst_label_score)):
+                label_score_list = inst_label_score[inst_id]
+                label_score_array = np.sort(
+                    np.array(
+                        [(label_id, label_score) for label_id, label_score in label_score_list],
+                        dtype=[("label_id", int), ("label_score", float)]
+                    ),
+                    order=["label_score", "label_id"]
+                )
+
+                for i in range(args.only_topk):
+                    ranked_row.append(inst_id)
+                    ranked_col.append(label_score_array[-i - 1][0])
+                    prob = label_score_array[-i - 1][1]
+                    if i > 0:
+                        last_prob = label_score_array[-i][1]
+                        if prob > last_prob - 0.00001:
+                            prob = last_prob * (1 - 1/(args.only_topk - i))
+                    ranked_data.append(prob)
+
+            C_ranked_eval_pred = smat.csr_matrix((ranked_data, (ranked_row, ranked_col)), shape=(n_insts, n_labels))
+            new_eval_metrics = rf_linear.Metrics.generate(C_eval_true, C_ranked_eval_pred, topk=args.only_topk)
+            return new_eval_metrics, eval_metrics
+        else:
+            return eval_metrics, eval_metrics
+
     def train(self, args, X_trn, C_trn, X_tst=None, C_tst=None):
         """ Train the model """
         args.train_batch_size = args.per_device_train_batch_size * max(1, args.n_gpu)
@@ -528,11 +577,16 @@ class TransformerMatcher(object):
                 neighbor_mat[dst[i]][src[i]] = 1.0
             neighbor_tensor = torch.tensor(neighbor_mat, device=args.device, dtype=torch.float32)
 
+        if args.rank_npz_path is not None:
+            if args.local_rank in [-1, 0]:
+                logger.info("Load rank npz file from {}".format(args.rank_npz_path))
+            val_ranking = smat.load_npz(args.rank_npz_path)
+        else:
+            val_ranking = None
+
         if X_tst is not None:
             assert C_tst is not None
-            tst_loss, tst_metrics, C_tst_pred, tst_embeddings = self.predict(args, X_tst, C_tst,
-                                                                             topk=args.only_topk,
-                                                                             get_hidden=True)
+            tst_metrics, _ = self.evaluate(args, X_tst, C_tst, val_ranking=val_ranking)
             if args.local_rank in [-1, 0]:
                 logger.info(
                     "| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
@@ -628,9 +682,7 @@ class TransformerMatcher(object):
             if epoch % args.eval_per_n_epochs == 0:
                 if X_tst is not None:
                     assert C_tst is not None
-                    tst_loss, tst_metrics, C_tst_pred, tst_embeddings = self.predict(args, X_tst, C_tst,
-                                                                                     topk=args.only_topk,
-                                                                                     get_hidden=True)
+                    tst_metrics, _ = self.evaluate(args, X_tst, C_tst, val_ranking=val_ranking)
                     if args.local_rank in [-1, 0]:
                         logger.info(
                             "| matcher_tst_prec {}".format(
