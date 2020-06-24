@@ -626,8 +626,6 @@ class TransformerMatcher(object):
                 labels = np.array(C_trn[inst_idx].toarray())
                 labels = torch.tensor(labels, dtype=torch.float).to(args.device)
                 if args.edge_tensor_path is not None:
-                    if epoch == 0 and step == 0:
-                        print(labels)
                     labels = torch.matmul(labels, neighbor_tensor).clamp(0, 1)
 
                 loss = self.loss_fn(logits, labels)
