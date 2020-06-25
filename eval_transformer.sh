@@ -17,6 +17,7 @@ for LABEL_NAME in "${LABEL_NAME_ARR[@]}"; do
         mkdir -p ${RANKER_DIR}
         
         # train linear ranker
+        echo "Train linear ranker ${RANKER_DIR}"
         python -m xbert.ranker train \
             -x1 ${DATA_DIR}/X.trn.npz \
             -x2 ${MATCHER_DIR}/trn_embeddings.npy \
