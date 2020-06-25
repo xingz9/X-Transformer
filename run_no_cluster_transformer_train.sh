@@ -72,7 +72,6 @@ CUDA_VISIBLE_DEVICES=${GPID} python -m torch.distributed.launch \
     -c_trn ${PROC_DATA_DIR}/C.trn.npz \
     -x_tst ${PROC_DATA_DIR}/X.tst.${MODEL_TYPE}.${MAX_XSEQ_LEN}.pkl \
     -c_tst ${PROC_DATA_DIR}/C.tst.npz \
-    -r ${MODEL_DIR} \
     -o ${MODEL_DIR} --overwrite_output_dir \
     --per_device_train_batch_size ${PER_DEVICE_TRN_BSZ} \
     --gradient_accumulation_steps ${GRAD_ACCU_STEPS} \
@@ -80,13 +79,14 @@ CUDA_VISIBLE_DEVICES=${GPID} python -m torch.distributed.launch \
     --warmup_steps ${WARMUP_STEPS} \
     --learning_rate ${LEARNING_RATE} \
     --logging_steps ${LOGGING_STEPS} \
-    --edge_tensor_path no_cluster_models/Eurlex-4K/label_graph_edges_4.pth \
+    --edge_tensor_path no_cluster_models/Eurlex-4K/label_graph_edges_16.pth \
     --rank_npz_path no_cluster_models/Eurlex-4K/tst.pred-4k.npz \
     |& tee ${MODEL_DIR}/log.txt
 
 
 # predict
-CUDA_VISIBLE_DEVICES=${GPID} python -u xbert/transformer.py \
+echo "Command to run prediction for evaluation:"
+echo CUDA_VISIBLE_DEVICES=${GPID} python -u xbert/transformer.py \
     -m ${MODEL_TYPE} -n ${MODEL_NAME} \
     --do_eval -o ${MODEL_DIR} \
     -r ${MODEL_DIR} \

@@ -271,7 +271,7 @@ class TransformerMatcher(object):
             "--local_rank", type=int, default=-1, help="For distributed training: local_rank",
         )
         parser.add_argument(
-            "--eval_per_n_epochs", type=int, default=10, help="Run evaluation per n epochs.",
+            "--eval_per_n_epochs", type=int, default=5, help="Run evaluation per n epochs.",
         )
         parser.add_argument(
             "--edge_tensor_path",
@@ -502,10 +502,10 @@ class TransformerMatcher(object):
                     ranked_data.append(prob)
 
             C_ranked_eval_pred = smat.csr_matrix((ranked_data, (ranked_row, ranked_col)), shape=(n_insts, n_labels))
-            new_eval_metrics = rf_linear.Metrics.generate(C_eval_true, C_ranked_eval_pred, topk=args.only_topk)
-            return new_eval_metrics, eval_metrics
+            ranked_eval_metrics = rf_linear.Metrics.generate(C_eval_true, C_ranked_eval_pred, topk=args.only_topk)
+            return eval_metrics, ranked_eval_metrics
         else:
-            return eval_metrics, eval_metrics
+            return eval_metrics, None
 
     def train(self, args, X_trn, C_trn, X_tst=None, C_tst=None):
         """ Train the model """
@@ -574,7 +574,8 @@ class TransformerMatcher(object):
             assert len(src) == len(dst), "{} != {}".format(len(src), len(dst))
             neighbor_mat = np.zeros((self.num_clusters, self.num_clusters))
             for i in range(len(src)):
-                neighbor_mat[dst[i]][src[i]] = 1.0
+                if dst[i] != src[i]:
+                    neighbor_mat[dst[i]][src[i]] = 1.0
             neighbor_tensor = torch.tensor(neighbor_mat, device=args.device, dtype=torch.float32)
 
         if args.rank_npz_path is not None:
@@ -586,12 +587,19 @@ class TransformerMatcher(object):
 
         if X_tst is not None:
             assert C_tst is not None
-            tst_metrics, _ = self.evaluate(args, X_tst, C_tst, val_ranking=val_ranking)
+            tst_metrics, ranked_eval_metrics = self.evaluate(args, X_tst, C_tst, val_ranking=val_ranking)
             if args.local_rank in [-1, 0]:
                 logger.info(
                     "| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
                 logger.info(
                     "| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
+                if ranked_eval_metrics is not None:
+                    logger.info(
+                        "| ranked_tst_prec  {}".format(
+                            " ".join("{:4.2f}".format(100 * v) for v in ranked_eval_metrics.prec)))
+                    logger.info(
+                        "| ranked_tst_recl  {}".format(
+                            " ".join("{:4.2f}".format(100 * v) for v in ranked_eval_metrics.recall)))
             self.model.train()
 
         global_step = 0
@@ -626,7 +634,8 @@ class TransformerMatcher(object):
                 labels = np.array(C_trn[inst_idx].toarray())
                 labels = torch.tensor(labels, dtype=torch.float).to(args.device)
                 if args.edge_tensor_path is not None:
-                    labels = torch.matmul(labels, neighbor_tensor).clamp(0, 1)
+                    labels = labels + torch.matmul(labels, neighbor_tensor).clamp(0, 0.5)
+                    labels.clamp_(0, 1)
 
                 loss = self.loss_fn(logits, labels)
 
@@ -680,7 +689,7 @@ class TransformerMatcher(object):
             if epoch % args.eval_per_n_epochs == 0:
                 if X_tst is not None:
                     assert C_tst is not None
-                    tst_metrics, _ = self.evaluate(args, X_tst, C_tst, val_ranking=val_ranking)
+                    tst_metrics, ranked_eval_metrics = self.evaluate(args, X_tst, C_tst, val_ranking=val_ranking)
                     if args.local_rank in [-1, 0]:
                         logger.info(
                             "| matcher_tst_prec {}".format(
@@ -688,6 +697,13 @@ class TransformerMatcher(object):
                         logger.info(
                             "| matcher_tst_recl {}".format(
                                 " ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
+                        if ranked_eval_metrics is not None:
+                            logger.info(
+                                "| ranked_tst_prec  {}".format(
+                                    " ".join("{:4.2f}".format(100 * v) for v in ranked_eval_metrics.prec)))
+                            logger.info(
+                                "| ranked_tst_recl  {}".format(
+                                    " ".join("{:4.2f}".format(100 * v) for v in ranked_eval_metrics.recall)))
                     self.model.train()
 
             if args.max_steps > 0 and global_step > args.max_steps:
