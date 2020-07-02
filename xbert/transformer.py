@@ -124,7 +124,7 @@ class HingeLoss(nn.Module):
         if self.squared:
             loss = loss ** 2
         loss = loss * (C_pos * y + C_neg * (1.0 - y))
-        return loss.mean()
+        return loss
 
 
 class TransformerMatcher(object):
@@ -576,7 +576,7 @@ class TransformerMatcher(object):
             for i in range(len(src)):
                 if dst[i] != src[i]:
                     neighbor_mat[dst[i]][src[i]] = 1.0
-            neighbor_tensor = torch.tensor(neighbor_mat, device=args.device, dtype=torch.float32)
+            neighbor_tensor = torch.tensor(neighbor_mat, device=args.device, dtype=torch.float32, requires_grad=False)
 
         if args.rank_npz_path is not None:
             if args.local_rank in [-1, 0]:
@@ -634,10 +634,10 @@ class TransformerMatcher(object):
                 labels = np.array(C_trn[inst_idx].toarray())
                 labels = torch.tensor(labels, dtype=torch.float).to(args.device)
                 if args.edge_tensor_path is not None:
-                    labels = labels + torch.matmul(labels, neighbor_tensor).clamp(0, 0.5)
+                    labels = labels + torch.matmul(labels, neighbor_tensor).clamp(0, 1)
                     labels.clamp_(0, 1)
 
-                loss = self.loss_fn(logits, labels)
+                loss = self.loss_fn(logits, labels).mean()
 
                 if args.n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu parallel training
