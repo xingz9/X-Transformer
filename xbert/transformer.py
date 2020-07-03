@@ -469,34 +469,27 @@ class TransformerMatcher(object):
 
         if val_ranking is not None:
             n_insts, n_labels = C_eval_pred.get_shape()
-            inst_label_score = [[] for _ in range(n_insts)]
-
-            inst_list, label_list = C_eval_pred.nonzero()
-            for i in range(len(inst_list)):
-                inst_id = inst_list[i]
-                label_id = label_list[i]
-                label_scores = val_ranking.getrow(inst_id).toarray()[0]
-                inst_label_score[inst_id].append((label_id, label_scores[label_id]))
-
             ranked_row = []
             ranked_col = []
             ranked_data = []
-            for inst_id in range(len(inst_label_score)):
-                label_score_list = inst_label_score[inst_id]
-                label_score_array = np.sort(
+            for inst_id in range(n_insts):
+                pred_row = C_eval_pred.getrow(inst_id).toarray()[0]
+                pred_ind = np.argsort(-pred_row)[:128]
+                ranking_row = val_ranking.getrow(inst_id).toarray()[0]
+                label_pred_array = np.sort(
                     np.array(
-                        [(label_id, label_score) for label_id, label_score in label_score_list],
-                        dtype=[("label_id", int), ("label_score", float)]
+                        [(label_id, ranking_row[label_id]) for label_id in pred_ind],
+                        dtype=[("label_id", int), ("label_pred", float)]
                     ),
-                    order=["label_score", "label_id"]
+                    order=["label_pred", "label_id"]
                 )
 
                 for i in range(args.only_topk):
                     ranked_row.append(inst_id)
-                    ranked_col.append(label_score_array[-i - 1][0])
-                    prob = label_score_array[-i - 1][1]
+                    ranked_col.append(label_pred_array[-i - 1][0])
+                    prob = label_pred_array[-i - 1][1]
                     if i > 0:
-                        last_prob = label_score_array[-i][1]
+                        last_prob = label_pred_array[-i][1]
                         if prob > last_prob - 0.00001:
                             prob = last_prob * (1 - 1/(args.only_topk - i))
                     ranked_data.append(prob)
