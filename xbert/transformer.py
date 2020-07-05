@@ -627,10 +627,18 @@ class TransformerMatcher(object):
                 labels = np.array(C_trn[inst_idx].toarray())
                 labels = torch.tensor(labels, dtype=torch.float).to(args.device)
                 if args.edge_tensor_path is not None:
-                    labels = labels + torch.matmul(labels, neighbor_tensor).clamp(0, 1)
-                    labels.clamp_(0, 1)
+                    # labels = labels + torch.matmul(labels, neighbor_tensor).clamp(0, 1)
+                    # labels.clamp_(0, 1)
 
-                loss = self.loss_fn(logits, labels).mean()
+                    neighbor_labels = torch.matmul(labels, neighbor_tensor).clamp(0, 1) - labels
+                    neighbor_labels.clamp_(0, 1)
+
+                    labels += neighbor_labels * 0.5
+
+                    loss = self.loss_fn(logits, labels) + (logits * neighbor_labels - 0.5) ** 2
+                    loss = loss.mean()
+                else:
+                    loss = self.loss_fn(logits, labels).mean()
 
                 if args.n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu parallel training
