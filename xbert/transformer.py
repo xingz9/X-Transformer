@@ -285,6 +285,9 @@ class TransformerMatcher(object):
             type=str,
             help="If not None, the npz file with ranking scores for validation data.",
         )
+        parser.add_argument(
+            "--pred_trn", action="store_true", help="Perform prediction for train set.",
+        )
 
         args = parser.parse_args()
         return {"parser": parser, "logger": logger, "args": args}
@@ -463,44 +466,48 @@ class TransformerMatcher(object):
             eval_embeddings = None
         return eval_loss, eval_metrics, C_eval_pred, eval_embeddings
 
+    def pred_ranking(self, C_eval_pred, val_ranking, topk):
+        n_insts, n_labels = C_eval_pred.get_shape()
+        ranked_row = []
+        ranked_col = []
+        ranked_data = []
+        for inst_id in range(n_insts):
+            pred_row = C_eval_pred.getrow(inst_id).toarray()[0]
+            pred_ind = np.argsort(-pred_row)[:128]
+            ranking_row = val_ranking.getrow(inst_id).toarray()[0]
+            label_pred_array = np.sort(
+                np.array(
+                    [(label_id, ranking_row[label_id]) for label_id in pred_ind],
+                    dtype=[("label_id", int), ("label_pred", float)]
+                ),
+                order=["label_pred", "label_id"]
+            )
+
+            for i in range(topk):
+                ranked_row.append(inst_id)
+                ranked_col.append(label_pred_array[-i - 1][0])
+                prob = label_pred_array[-i - 1][1]
+                if i > 0:
+                    last_prob = label_pred_array[-i][1]
+                    if prob > last_prob - 0.00001:
+                        prob = last_prob * (1 - 1 / (topk - i))
+                ranked_data.append(prob)
+
+        C_ranked_eval_pred = smat.csr_matrix((ranked_data, (ranked_row, ranked_col)), shape=(n_insts, n_labels))
+        return C_ranked_eval_pred
+
     def evaluate(self, args, eval_features, C_eval_true, val_ranking=None):
         _, eval_metrics, C_eval_pred, _ = self.predict(
             args, eval_features, C_eval_true, topk=(10 if val_ranking is None else 128))
 
         if val_ranking is not None:
-            n_insts, n_labels = C_eval_pred.get_shape()
-            ranked_row = []
-            ranked_col = []
-            ranked_data = []
-            for inst_id in range(n_insts):
-                pred_row = C_eval_pred.getrow(inst_id).toarray()[0]
-                pred_ind = np.argsort(-pred_row)[:128]
-                ranking_row = val_ranking.getrow(inst_id).toarray()[0]
-                label_pred_array = np.sort(
-                    np.array(
-                        [(label_id, ranking_row[label_id]) for label_id in pred_ind],
-                        dtype=[("label_id", int), ("label_pred", float)]
-                    ),
-                    order=["label_pred", "label_id"]
-                )
-
-                for i in range(args.only_topk):
-                    ranked_row.append(inst_id)
-                    ranked_col.append(label_pred_array[-i - 1][0])
-                    prob = label_pred_array[-i - 1][1]
-                    if i > 0:
-                        last_prob = label_pred_array[-i][1]
-                        if prob > last_prob - 0.00001:
-                            prob = last_prob * (1 - 1/(args.only_topk - i))
-                    ranked_data.append(prob)
-
-            C_ranked_eval_pred = smat.csr_matrix((ranked_data, (ranked_row, ranked_col)), shape=(n_insts, n_labels))
+            C_ranked_eval_pred = self.pred_ranking(C_eval_pred, val_ranking, args.only_topk)
             ranked_eval_metrics = rf_linear.Metrics.generate(C_eval_true, C_ranked_eval_pred, topk=args.only_topk)
             return eval_metrics, ranked_eval_metrics
         else:
             return eval_metrics, None
 
-    def train(self, args, X_trn, C_trn, X_tst=None, C_tst=None):
+    def train(self, args, X_trn, C_trn, X_tst=None, C_tst=None, val_ranking=None):
         """ Train the model """
         args.train_batch_size = args.per_device_train_batch_size * max(1, args.n_gpu)
         all_inst_idx = torch.tensor([f["inst_idx"] for f in X_trn], dtype=torch.long)
@@ -570,13 +577,6 @@ class TransformerMatcher(object):
                 if dst[i] != src[i]:
                     neighbor_mat[dst[i]][src[i]] = 1.0
             neighbor_tensor = torch.tensor(neighbor_mat, device=args.device, dtype=torch.float32, requires_grad=False)
-
-        if args.rank_npz_path is not None:
-            if args.local_rank in [-1, 0]:
-                logger.info("Load rank npz file from {}".format(args.rank_npz_path))
-            val_ranking = smat.load_npz(args.rank_npz_path)
-        else:
-            val_ranking = None
 
         if X_tst is not None:
             assert C_tst is not None
@@ -715,6 +715,13 @@ def main():
     # get args
     args = TransformerMatcher.get_args_and_set_logger()["args"]
 
+    if args.rank_npz_path is not None:
+        if args.local_rank in [-1, 0]:
+            logger.info("Load rank npz file from {}".format(args.rank_npz_path))
+        val_ranking = smat.load_npz(args.rank_npz_path)
+    else:
+        val_ranking = None
+
     # do_train and save model
     if args.do_train:
         # setup output_dir
@@ -754,7 +761,7 @@ def main():
             matcher.prepare_model(args)
 
         # train
-        matcher.train(args, X_trn, C_trn, X_tst, C_tst)
+        matcher.train(args, X_trn, C_trn, X_tst, C_tst, val_ranking=val_ranking)
         if args.local_rank in [-1, 0]:
             matcher.save_model(args)
 
@@ -783,20 +790,34 @@ def main():
         matcher.model = model
 
         # predict
-        trn_loss, trn_metrics, C_trn_pred, trn_embeddings = matcher.predict(args, X_trn, C_trn, topk=args.only_topk, get_hidden=True)
+        if args.pred_trn:
+            trn_loss, trn_metrics, C_trn_pred, trn_embeddings = matcher.predict(args, X_trn, C_trn, topk=args.only_topk, get_hidden=True)
+            logger.info("| matcher_trn_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in trn_metrics.prec)))
+            logger.info("| matcher_trn_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in trn_metrics.recall)))
+
         tst_loss, tst_metrics, C_tst_pred, tst_embeddings = matcher.predict(args, X_tst, C_tst, topk=args.only_topk, get_hidden=True)
-        logger.info("| matcher_trn_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in trn_metrics.prec)))
-        logger.info("| matcher_trn_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in trn_metrics.recall)))
         logger.info("| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
         logger.info("| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
 
-        # save C_trn_pred.npz and trn_embedding.npy
-        trn_csr_codes = rf_util.smat_util.sorted_csr(C_trn_pred, only_topk=args.only_topk)
-        trn_csr_codes = transform_prediction(trn_csr_codes, transform="lpsvm-l2")
-        csr_codes_path = os.path.join(args.output_dir, "C_trn_pred.npz")
-        smat.save_npz(csr_codes_path, trn_csr_codes)
-        embedding_path = os.path.join(args.output_dir, "trn_embeddings.npy")
-        np.save(embedding_path, trn_embeddings)
+        if val_ranking is not None:
+            C_ranked_eval_pred = matcher.pred_ranking(C_tst_pred, val_ranking, args.only_topk)
+            smat.save_npz(os.path.join(args.output_dir, "C_tst_pred-ranked.npz"), C_ranked_eval_pred)
+            ranked_eval_metrics = rf_linear.Metrics.generate(C_tst, C_ranked_eval_pred, topk=args.only_topk)
+            logger.info(
+                "| ranked_tst_prec  {}".format(
+                    " ".join("{:4.2f}".format(100 * v) for v in ranked_eval_metrics.prec)))
+            logger.info(
+                "| ranked_tst_recl  {}".format(
+                    " ".join("{:4.2f}".format(100 * v) for v in ranked_eval_metrics.recall)))
+
+        if args.pred_trn:
+            # save C_trn_pred.npz and trn_embedding.npy
+            trn_csr_codes = rf_util.smat_util.sorted_csr(C_trn_pred, only_topk=args.only_topk)
+            trn_csr_codes = transform_prediction(trn_csr_codes, transform="lpsvm-l2")
+            csr_codes_path = os.path.join(args.output_dir, "C_trn_pred.npz")
+            smat.save_npz(csr_codes_path, trn_csr_codes)
+            embedding_path = os.path.join(args.output_dir, "trn_embeddings.npy")
+            np.save(embedding_path, trn_embeddings)
 
         # save C_eval_pred.npz and tst_embedding.npy
         tst_csr_codes = rf_util.smat_util.sorted_csr(C_tst_pred, only_topk=args.only_topk)
