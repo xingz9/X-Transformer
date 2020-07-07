@@ -353,13 +353,14 @@ class TransformerMatcher(object):
         self.config = config
         self.model = model
 
-    def save_model(self, args):
+    def save_model(self, args, subdir=None):
         # Save model checkpoint
-        if not os.path.exists(args.output_dir):
-            os.makedirs(args.output_dir)
+        output_dir = args.output_dir if subdir is None else os.path.join(args.output_dir, subdir)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
         model_to_save = self.model.module if hasattr(self.model, "module") else self.model  # Take care of distributed/parallel training
-        model_to_save.save_pretrained(args.output_dir)
-        torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
+        model_to_save.save_pretrained(output_dir)
+        torch.save(args, os.path.join(output_dir, "training_args.bin"))
 
     def predict(self, args, X_eval, C_eval_true, topk=10, get_hidden=False):
         """Prediction interface"""
@@ -578,9 +579,12 @@ class TransformerMatcher(object):
                     neighbor_mat[dst[i]][src[i]] = 1.0
             neighbor_tensor = torch.tensor(neighbor_mat, device=args.device, dtype=torch.float32, requires_grad=False)
 
+        best_matcher_prec = -1
         if X_tst is not None:
             assert C_tst is not None
             tst_metrics, ranked_eval_metrics = self.evaluate(args, X_tst, C_tst, val_ranking=val_ranking)
+            metrics = tst_metrics if ranked_eval_metrics is None else ranked_eval_metrics
+            best_matcher_prec = metrics.prec[0]
             if args.local_rank in [-1, 0]:
                 logger.info(
                     "| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
@@ -598,7 +602,6 @@ class TransformerMatcher(object):
         global_step = 0
         tr_loss, logging_loss = 0.0, 0.0
         total_run_time = 0.0
-        best_matcher_prec = -1
 
         self.model.zero_grad()
         set_seed(args)  # Added here for reproductibility (even between python 2 and 3)
@@ -691,6 +694,7 @@ class TransformerMatcher(object):
                 if X_tst is not None:
                     assert C_tst is not None
                     tst_metrics, ranked_eval_metrics = self.evaluate(args, X_tst, C_tst, val_ranking=val_ranking)
+                    metrics = tst_metrics if ranked_eval_metrics is None else ranked_eval_metrics
                     if args.local_rank in [-1, 0]:
                         logger.info(
                             "| matcher_tst_prec {}".format(
@@ -705,6 +709,11 @@ class TransformerMatcher(object):
                             logger.info(
                                 "| ranked_tst_recl  {}".format(
                                     " ".join("{:4.2f}".format(100 * v) for v in ranked_eval_metrics.recall)))
+                    if metrics.prec[0] > best_matcher_prec:
+                        best_matcher_prec = metrics.prec[0]
+                        if args.local_rank in [-1, 0]:
+                            logger.info("| Save best model")
+                            self.save_model(args, "best")
                     self.model.train()
 
             if args.max_steps > 0 and global_step > args.max_steps:
@@ -795,11 +804,18 @@ def main():
             logger.info("| matcher_trn_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in trn_metrics.prec)))
             logger.info("| matcher_trn_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in trn_metrics.recall)))
 
-        tst_loss, tst_metrics, C_tst_pred, tst_embeddings = matcher.predict(args, X_tst, C_tst, topk=args.only_topk, get_hidden=True)
-        logger.info("| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
-        logger.info("| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
-
-        if val_ranking is not None:
+        if val_ranking is None:
+            tst_loss, tst_metrics, C_tst_pred, tst_embeddings = matcher.predict(args, X_tst, C_tst, topk=args.only_topk, get_hidden=True)
+            logger.info("| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
+            logger.info("| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
+        else:
+            tst_loss, tst_metrics, C_tst_pred, tst_embeddings = matcher.predict(
+                args, X_tst, C_tst,
+                topk=args.only_topk if args.only_topk > 128 else 128,
+                get_hidden=True
+            )
+            logger.info("| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
+            logger.info("| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
             C_ranked_eval_pred = matcher.pred_ranking(C_tst_pred, val_ranking, args.only_topk)
             smat.save_npz(os.path.join(args.output_dir, "C_tst_pred-ranked.npz"), C_ranked_eval_pred)
             ranked_eval_metrics = rf_linear.Metrics.generate(C_tst, C_ranked_eval_pred, topk=args.only_topk)
