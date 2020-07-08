@@ -632,6 +632,7 @@ class TransformerMatcher(object):
                 if args.edge_tensor_path is not None:
                     # labels = labels + torch.matmul(labels, neighbor_tensor).clamp(0, 1)
                     # labels.clamp_(0, 1)
+                    # loss = self.loss_fn(logits, labels).mean()
 
                     neighbor_labels = torch.matmul(labels, neighbor_tensor).clamp(0, 1) - labels
                     neighbor_labels.clamp_(0, 1)
