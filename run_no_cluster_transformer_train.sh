@@ -41,7 +41,7 @@ if [ ${DATASET} == "Eurlex-4K" ]; then
     LOGGING_STEPS=50
     LEARNING_RATE=5e-5
 elif [ ${DATASET} == "Wiki10-31K" ]; then
-    MAX_STEPS=2000
+    MAX_STEPS=20000
     WARMUP_STEPS=200
     LOGGING_STEPS=50
     LEARNING_RATE=5e-5
@@ -60,7 +60,7 @@ else
     exit
 fi
 
-MODEL_DIR=${OUTPUT_DIR}/matcher/${MODEL_NAME}_n4
+MODEL_DIR=${OUTPUT_DIR}/matcher/${MODEL_NAME}_n0
 mkdir -p ${MODEL_DIR}
 
 
@@ -73,14 +73,14 @@ CUDA_VISIBLE_DEVICES=${GPID} python -m torch.distributed.launch \
     -x_tst ${PROC_DATA_DIR}/X.tst.${MODEL_TYPE}.${MAX_XSEQ_LEN}.pkl \
     -c_tst ${PROC_DATA_DIR}/C.tst.npz \
     -o ${MODEL_DIR} --overwrite_output_dir \
+    -r ${MODEL_DIR} \
     --per_device_train_batch_size ${PER_DEVICE_TRN_BSZ} \
     --gradient_accumulation_steps ${GRAD_ACCU_STEPS} \
     --max_steps ${MAX_STEPS} \
     --warmup_steps ${WARMUP_STEPS} \
     --learning_rate ${LEARNING_RATE} \
     --logging_steps ${LOGGING_STEPS} \
-    --edge_tensor_path no_cluster_models/Eurlex-4K/label_graph_edges_4.pth \
-    --rank_npz_path no_cluster_models/Eurlex-4K/tst.pred-4k.npz \
+    --rank_npz_path no_cluster_models/${DATASET}/ranker/linear-v1/tst.pred-full.npz \
     |& tee ${MODEL_DIR}/log.txt
 
 
@@ -95,8 +95,7 @@ echo CUDA_VISIBLE_DEVICES=${GPID} python -u xbert/transformer.py \
     -x_tst ${PROC_DATA_DIR}/X.tst.${MODEL_TYPE}.${MAX_XSEQ_LEN}.pkl \
     -c_tst ${PROC_DATA_DIR}/C.tst.npz \
     --per_device_eval_batch_size ${PER_DEVICE_VAL_BSZ} \
-    --rank_npz_path no_cluster_models/Eurlex-4K/tst.pred-4k.npz \
-    --only_topk 128
+    --rank_npz_path no_cluster_models/${DATASET}/ranker/linear-v1/tst.pred-full.npz
 
 #### end ####
 

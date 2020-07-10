@@ -499,7 +499,7 @@ class TransformerMatcher(object):
 
     def evaluate(self, args, eval_features, C_eval_true, val_ranking=None):
         _, eval_metrics, C_eval_pred, _ = self.predict(
-            args, eval_features, C_eval_true, topk=(10 if val_ranking is None else 128))
+            args, eval_features, C_eval_true, topk=(10 if val_ranking is None else int(C_eval_true.shape[1] / 32)))
 
         if val_ranking is not None:
             C_ranked_eval_pred = self.pred_ranking(C_eval_pred, val_ranking, args.only_topk)
@@ -810,9 +810,10 @@ def main():
             logger.info("| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
             logger.info("| matcher_tst_recl {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.recall)))
         else:
+            topk = int(C_tst.shape[1] / 32)
             tst_loss, tst_metrics, C_tst_pred, tst_embeddings = matcher.predict(
                 args, X_tst, C_tst,
-                topk=args.only_topk if args.only_topk > 128 else 128,
+                topk=args.only_topk if args.only_topk > topk else topk,
                 get_hidden=True
             )
             logger.info("| matcher_tst_prec {}".format(" ".join("{:4.2f}".format(100 * v) for v in tst_metrics.prec)))
