@@ -30,7 +30,7 @@ for SEED in "${SEED_LIST[@]}"; do
 
     # x_emb=xlnet_finetuned+TF-IDF, model=Parabel
     elif [ ${VERSION} == 'v1' ]; then
-        echo python -m xbert.ranker train \
+        python -m xbert.ranker train \
             -x ${DATA_DIR}/X.trn.npz \
             -x2 ${DATA_DIR}/X.trn.finetune.xlnet.npy \
             -y ${DATA_DIR}/Y.trn.npz \
