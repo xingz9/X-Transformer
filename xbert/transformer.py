@@ -576,7 +576,7 @@ class TransformerMatcher(object):
             neighbor_mat = np.zeros((self.num_clusters, self.num_clusters))
             for i in range(len(src)):
                 if dst[i] != src[i]:
-                    neighbor_mat[dst[i]][src[i]] = 1.0
+                    neighbor_mat[src[i]][dst[i]] = 1.0
             neighbor_tensor = torch.tensor(neighbor_mat, device=args.device, dtype=torch.float32, requires_grad=False)
 
         best_matcher_prec = -1
