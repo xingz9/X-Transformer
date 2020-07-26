@@ -639,7 +639,10 @@ class TransformerMatcher(object):
 
                     labels += neighbor_labels * 0.5
 
-                    loss = self.loss_fn(logits, labels) + (logits * neighbor_labels - 0.5) ** 2
+                    # loss = self.loss_fn(logits, labels) + (logits * neighbor_labels - 0.5) ** 2
+                    # loss = self.loss_fn(logits, labels) + F.relu(torch.abs(logits * neighbor_labels) - 1) ** 2
+                    # loss = self.loss_fn(logits, labels) + F.relu(-1 - logits * neighbor_labels) ** 2
+                    loss = self.loss_fn(logits, labels) + F.relu(logits * neighbor_labels - 1) ** 2
                     loss = loss.mean()
                 else:
                     loss = self.loss_fn(logits, labels).mean()
