@@ -60,7 +60,7 @@ else
     exit
 fi
 
-MODEL_DIR=${OUTPUT_DIR}/matcher/${MODEL_NAME}_n0/best
+MODEL_DIR=${OUTPUT_DIR}/matcher/${MODEL_NAME}_n0
 
 # predict
 CUDA_VISIBLE_DEVICES=${GPID} python -u xbert/transformer.py \
@@ -72,7 +72,8 @@ CUDA_VISIBLE_DEVICES=${GPID} python -u xbert/transformer.py \
     -x_tst ${PROC_DATA_DIR}/X.tst.${MODEL_TYPE}.${MAX_XSEQ_LEN}.pkl \
     -c_tst ${PROC_DATA_DIR}/C.tst.npz \
     --per_device_eval_batch_size ${PER_DEVICE_VAL_BSZ} \
-    --rank_npz_path no_cluster_models/${DATASET}/ranker/linear-v1/tst.pred-full.npz
+    --rank_npz_path no_cluster_models/${DATASET}/ranker/linear-v1/tst.pred-full.npz \
+    |& tee ${MODEL_DIR}/predict.log
 
 #### end ####
 
